@@ -434,18 +434,21 @@ export default function Home() {
 
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
-        const pdfjsLib = await import('pdfjs-dist');
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@5.7.284/legacy/build/pdf.worker.min.mjs`;
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        let fullText = '';
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(' ');
-          fullText += pageText + '\n';
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch('/api/parse-pdf', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'PDF 解析失败');
         }
-        const extracted = fullText.trim();
+        
+        const extracted = data.text.trim();
         if (!extracted) {
           alert('PDF 解析结果为空，请确认文件为可提取文字的 PDF（非扫描件）');
         }
