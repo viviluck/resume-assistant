@@ -783,7 +783,7 @@ export default function Home() {
 
     switch (activeTab) {
       case 'jdAnalysis':
-        const rawJdData = apiResponse.jdAnalysis || {} as JdAnalysis;
+        const rawJdData: any = apiResponse.jdAnalysis || {};
         console.log("=== JD解析收到的真实数据 ===", rawJdData);
         let parsedJD = {};
         try {
