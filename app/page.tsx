@@ -465,9 +465,9 @@ export default function Home() {
 
         let extracted = data.text?.trim() || '';
         
-        // 如果提取结果为空或过短，尝试 OCR 兜底
+        // 如果提取结果为空或过短，尝试客户端 OCR 兜底
         if (!extracted || extracted.length < 50) {
-          console.log('[PDF解析] 文字提取结果为空或过短，准备启用 OCR 兜底');
+          console.log('[PDF解析] 文字提取结果为空或过短，准备启用客户端 OCR 兜底');
           
           if (data.warning) {
             setParsingStatus('当前 PDF 未检测到可直接提取的文字，正在尝试图像识别...');
@@ -478,20 +478,22 @@ export default function Home() {
           setIsOcrLoading(true);
           
           try {
-            const ocrFormData = new FormData();
-            ocrFormData.append('file', file);
+            // 动态导入 tesseract.js（客户端执行）
+            const { createWorker } = await import('tesseract.js');
+            const worker = await createWorker('chi_sim+eng');
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const base64 = Buffer.from(arrayBuffer).toString('base64');
+            const dataUrl = `data:${file.type};base64,${base64}`;
             
             setParsingStatus('正在进行 OCR 图像识别...');
-            const ocrResponse = await fetch('/api/ocr', {
-              method: 'POST',
-              body: ocrFormData,
-            });
+            const result = await worker.recognize(dataUrl);
+            await worker.terminate();
             
-            const ocrData = await ocrResponse.json();
-            console.log('[OCR] API 返回:', ocrData);
+            console.log('[OCR] 识别结果:', { textLength: result.data.text.length, confidence: result.data.confidence });
 
-            if (ocrResponse.ok && ocrData.text?.trim()) {
-              extracted = ocrData.text.trim();
+            if (result.data.text?.trim()) {
+              extracted = result.data.text.trim();
               setParsingStatus(null);
               setIsOcrLoading(false);
               
@@ -501,7 +503,7 @@ export default function Home() {
                 return;
               }
             } else {
-              console.warn('[OCR] 识别结果为空:', ocrData.warning || '未知原因');
+              console.warn('[OCR] 识别结果为空');
             }
           } catch (ocrErr) {
             console.error('[OCR] 兜底识别失败:', ocrErr);
