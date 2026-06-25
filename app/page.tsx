@@ -376,6 +376,9 @@ export default function Home() {
   const [resumeRegenerating, setResumeRegenerating] = useState(false);
   const [accordionOpenIndex, setAccordionOpenIndex] = useState<number | null>(null);
   const [starStories, setStarStories] = useState<StarStory[]>([]);
+  const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [parsingStatus, setParsingStatus] = useState<string | null>(null);
 
   // 打字机开关：首次加载完成后启用
   const [resumeTypewriterReady, setResumeTypewriterReady] = useState(false);
@@ -432,11 +435,21 @@ export default function Home() {
     const file = acceptedFiles[0];
     if (!file) return;
 
+    console.log('[文件上传] 收到文件:', {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+    });
+
+    setParsingStatus('正在读取文件...');
+
+    // 处理 PDF 文件
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
         const formData = new FormData();
         formData.append('file', file);
         
+        setParsingStatus('正在解析 PDF 文字...');
         const response = await fetch('/api/parse-pdf', {
           method: 'POST',
           body: formData,
@@ -444,30 +457,145 @@ export default function Home() {
         
         const data = await response.json();
         
+        console.log('[PDF解析] API 返回:', data);
+
         if (!response.ok || data.error) {
           throw new Error(data.error || 'PDF 解析失败');
         }
+
+        let extracted = data.text?.trim() || '';
         
-        const extracted = data.text.trim();
-        if (!extracted) {
-          alert('PDF 解析结果为空，请确认文件为可提取文字的 PDF（非扫描件）');
+        // 如果提取结果为空或过短，尝试 OCR 兜底
+        if (!extracted || extracted.length < 50) {
+          console.log('[PDF解析] 文字提取结果为空或过短，准备启用 OCR 兜底');
+          
+          if (data.warning) {
+            setParsingStatus('当前 PDF 未检测到可直接提取的文字，正在尝试图像识别...');
+          } else {
+            setParsingStatus('当前 PDF 未检测到可直接提取的文字，可能是图片型 PDF 或扫描件，正在尝试图像识别，耗时稍长...');
+          }
+          
+          setIsOcrLoading(true);
+          
+          try {
+            const ocrFormData = new FormData();
+            ocrFormData.append('file', file);
+            
+            setParsingStatus('正在进行 OCR 图像识别...');
+            const ocrResponse = await fetch('/api/ocr', {
+              method: 'POST',
+              body: ocrFormData,
+            });
+            
+            const ocrData = await ocrResponse.json();
+            console.log('[OCR] API 返回:', ocrData);
+
+            if (ocrResponse.ok && ocrData.text?.trim()) {
+              extracted = ocrData.text.trim();
+              setParsingStatus(null);
+              setIsOcrLoading(false);
+              
+              if (extracted.length > 0) {
+                setResumeText(extracted);
+                console.log('[成功] OCR 识别成功，提取字符数:', extracted.length);
+                return;
+              }
+            } else {
+              console.warn('[OCR] 识别结果为空:', ocrData.warning || '未知原因');
+            }
+          } catch (ocrErr) {
+            console.error('[OCR] 兜底识别失败:', ocrErr);
+          }
+          
+          setIsOcrLoading(false);
+          
+          // OCR 也失败了，给用户友好提示
+          setParsingStatus(null);
+          setResumeText('');
+          alert(
+            `当前 PDF 未检测到可直接提取的文字，图像识别也未能提取内容。\n\n` +
+            `可能原因：\n` +
+            `1. PDF 是扫描件且图片质量较低\n` +
+            `2. PDF 使用了特殊加密或格式\n\n` +
+            `建议方案：\n` +
+            `• 尝试上传 Word 版简历（.docx）\n` +
+            `• 直接粘贴简历文本\n` +
+            `• 重新导出 PDF（选择"文字"而非"图像"）`
+          );
+          return;
         }
+
         setResumeText(extracted);
-      } catch (err) {
+        setParsingStatus(null);
+        console.log('[成功] PDF 解析成功，提取字符数:', extracted.length);
+        return;
+        
+      } catch (err: any) {
         console.error('[PDF解析] 失败:', err);
+        setParsingStatus(null);
         setResumeText('');
-        alert('PDF 解析失败，请确认文件为可提取文字的 PDF（非扫描件）');
+        alert(
+          `PDF 解析失败: ${err.message}\n\n` +
+          `建议：\n` +
+          `• 尝试上传 Word 版简历（.docx）\n` +
+          `• 直接粘贴简历文本`
+        );
+        return;
       }
-      return;
     }
 
+    // 处理 DOCX 文件
+    if (
+      file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      file.name.endsWith('.docx')
+    ) {
+      try {
+        setParsingStatus('正在解析 Word 文档...');
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch('/api/parse-docx', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        const data = await response.json();
+        console.log('[DOCX解析] API 返回:', data);
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Word 文档解析失败');
+        }
+
+        const extracted = data.text?.trim() || '';
+        if (!extracted) {
+          setParsingStatus(null);
+          alert('Word 文档解析结果为空');
+          return;
+        }
+
+        setResumeText(extracted);
+        setParsingStatus(null);
+        console.log('[成功] DOCX 解析成功，提取字符数:', extracted.length);
+        return;
+      } catch (err: any) {
+        console.error('[DOCX解析] 失败:', err);
+        setParsingStatus(null);
+        alert(`Word 文档解析失败: ${err.message}`);
+        return;
+      }
+    }
+
+    // 处理文本文件
     const reader = new FileReader();
     reader.onload = (e) => {
-      const text = e.target?.result as string;
+      const text = (e.target?.result as string || '').trim();
+      console.log('[文本文件] 读取成功，字符数:', text.length);
       setResumeText(text);
+      setParsingStatus(null);
     };
     reader.onerror = () => {
       console.error('[文件读取] 失败');
+      setParsingStatus(null);
       alert('文件读取失败，请重试或换用纯文本输入');
     };
     reader.readAsText(file);
@@ -476,7 +604,7 @@ export default function Home() {
   const onDropRejected = useCallback((fileRejections: any[]) => {
     setIsDragging(false);
     const errors = fileRejections.map((r) => r.file.name).join(', ');
-    alert(`以下文件类型不被支持: ${errors}\n请上传 .txt, .md 或 .pdf 格式的文件。`);
+    alert(`以下文件类型不被支持: ${errors}\n请上传 .txt, .md, .pdf 或 .docx 格式的文件。`);
   }, []);
 
   const { getRootProps, getInputProps } = useDropzone({
@@ -485,7 +613,12 @@ export default function Home() {
     onDragLeave: () => setIsDragging(false),
     onDropAccepted: () => setIsDragging(false),
     onDropRejected,
-    accept: { 'text/plain': ['.txt'], 'text/markdown': ['.md'], 'application/pdf': ['.pdf'] },
+    accept: { 
+      'text/plain': ['.txt'], 
+      'text/markdown': ['.md'], 
+      'application/pdf': ['.pdf'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx']
+    },
     multiple: false
   });
 
@@ -1218,11 +1351,30 @@ export default function Home() {
                 >
                   <input {...getInputProps()} />
                   <Cloud className={`w-12 h-12 mx-auto mb-4 ${isDragging ? 'text-gray-500' : 'text-gray-300'}`} />
-                  <p className="text-slate-500 mb-2">
-                    {isDragging ? '释放文件以上传' : '拖拽文件到此处，或点击选择文件'}
-                  </p>
-                  <p className="text-sm text-slate-400">支持 .txt, .md, .pdf 格式</p>
-                  {resumeText && (
+                  {isOcrLoading ? (
+                    <>
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                        <p className="text-indigo-600 font-medium">正在图像识别...</p>
+                        <p className="text-xs text-slate-400">耗时较长请耐心等待</p>
+                      </div>
+                    </>
+                  ) : parsingStatus ? (
+                    <>
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="w-8 h-8 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
+                        <p className="text-indigo-600 font-medium">{parsingStatus}</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-slate-500 mb-2">
+                        {isDragging ? '释放文件以上传' : '拖拽文件到此处，或点击选择文件'}
+                      </p>
+                      <p className="text-sm text-slate-400">支持 .txt, .md, .pdf, .docx 格式</p>
+                    </>
+                  )}
+                  {resumeText && !isOcrLoading && !parsingStatus && (
                     <div className="mt-4 flex items-center justify-center gap-2 text-emerald-600">
                       <FileText className="w-4 h-4" />
                       <span className="text-sm">已加载简历内容（{resumeText.length} 字符）</span>
@@ -1235,9 +1387,9 @@ export default function Home() {
             {/* 左侧主操作按钮：常驻显示 */}
             <button
               onClick={handleGenerate}
-              disabled={isLoading || !jdText || !resumeText}
+              disabled={isLoading || isOcrLoading || !jdText || !resumeText}
               className={`w-full mt-6 py-4 rounded-xl font-bold text-lg shadow-sm transition-all duration-300 transform flex items-center justify-center gap-2
-                ${isLoading
+                ${isLoading || isOcrLoading
                   ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                   : (!jdText || !resumeText)
                     ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
@@ -1248,6 +1400,11 @@ export default function Home() {
                 <>
                   <span className="animate-spin text-xl">⏳</span>
                   <span>正在深度解析与生成...</span>
+                </>
+              ) : isOcrLoading ? (
+                <>
+                  <span className="animate-spin text-xl">🔍</span>
+                  <span>正在进行图像识别...</span>
                 </>
               ) : (tailoredResume || jdAnalysis) ? (
                 <>
