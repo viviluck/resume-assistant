@@ -435,7 +435,7 @@ export default function Home() {
     if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
       try {
         const pdfjsLib = await import('pdfjs-dist');
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@5.7.284/build/pdf.worker.min.mjs`;
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@5.7.284/legacy/build/pdf.worker.min.mjs`;
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         let fullText = '';
@@ -446,6 +446,9 @@ export default function Home() {
           fullText += pageText + '\n';
         }
         const extracted = fullText.trim();
+        if (!extracted) {
+          alert('PDF 解析结果为空，请确认文件为可提取文字的 PDF（非扫描件）');
+        }
         setResumeText(extracted);
       } catch (err) {
         console.error('[PDF解析] 失败:', err);
@@ -460,7 +463,17 @@ export default function Home() {
       const text = e.target?.result as string;
       setResumeText(text);
     };
+    reader.onerror = () => {
+      console.error('[文件读取] 失败');
+      alert('文件读取失败，请重试或换用纯文本输入');
+    };
     reader.readAsText(file);
+  }, []);
+
+  const onDropRejected = useCallback((fileRejections: any[]) => {
+    setIsDragging(false);
+    const errors = fileRejections.map((r) => r.file.name).join(', ');
+    alert(`以下文件类型不被支持: ${errors}\n请上传 .txt, .md 或 .pdf 格式的文件。`);
   }, []);
 
   const { getRootProps, getInputProps } = useDropzone({
@@ -468,8 +481,9 @@ export default function Home() {
     onDragEnter: () => setIsDragging(true),
     onDragLeave: () => setIsDragging(false),
     onDropAccepted: () => setIsDragging(false),
-    onDropRejected: () => setIsDragging(false),
-    accept: { 'text/*': ['.txt', '.md'], 'application/pdf': ['.pdf'] }
+    onDropRejected,
+    accept: { 'text/plain': ['.txt'], 'text/markdown': ['.md'], 'application/pdf': ['.pdf'] },
+    multiple: false
   });
 
   const handleGenerate = async () => {
